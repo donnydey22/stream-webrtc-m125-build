@@ -106,6 +106,14 @@ jobs:
           curl -sSL -o ref.zip "$STREAM_REF_URL"; shasum -a 256 ref.zip > logs/stream-published-125.6422.070.sha256
           mkdir ref && ditto -x -k ref.zip ref
           for s in ios-arm64 ios-arm64_x86_64-simulator; do echo "$s ours vs stream:"; ls -la out/WebRTC.xcframework/$s/WebRTC.framework/WebRTC ref/WebRTC.xcframework/$s/WebRTC.framework/WebRTC 2>&1; done | tee -a logs/stream-published-125.6422.070.sha256
+      - name: Extra assets (port patch, workflows)
+        run: |
+          cp logs/lmsc-m125-port.patch dist/
+          (cd $GITHUB_WORKSPACE && git init -q wf 2>/dev/null; true)
+          curl -sSL -H "Authorization: Bearer ${{ github.token }}" -o dist/workflows.tar.gz "$GITHUB_SERVER_URL/../api/v3" 2>/dev/null || true
+          rm -f dist/workflows.tar.gz
+          gh api "repos/$GITHUB_REPOSITORY/tarball/$GITHUB_SHA" > dist/workflow-source-$GITHUB_SHA.tar.gz
+        env: { GH_TOKEN: "${{ github.token }}" }
       - name: Checksums + provenance.json
         env: { WRAP_OUTCOME: "${{ steps.wrap.outcome }}" }
         run: |
@@ -145,5 +153,6 @@ jobs:
         run: |
           (cd logs && zip -qr ../dist/build-logs.zip .)
           T=m125-stream-125.6422.070-run${{ github.run_id }}
+          for old in $(gh release list -R "$GITHUB_REPOSITORY" --json tagName --jq '.[].tagName'); do gh release edit "$old" -R "$GITHUB_REPOSITORY" --prerelease --title "SUPERSEDED by $T" >/dev/null; done
           gh release create "$T" dist/* -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" -t "Stream WebRTC m125 (125.6422.070 lineage) + libmediasoupclient, iOS" \
-            -n "Built from GetStream/webrtc $WEBRTC_COMMIT with Stream's recipe ($STREAM_RECIPE). Swift wrapper: ${{ steps.wrap.outcome }}. GitHub attestation: ${{ steps.attest.outcome }}. See provenance.json and SHA256SUMS."
+            --latest -n "Includes: Mediasoup.xcframework (VLprojects mediasoup-client-swift ${WRAP_TAG} retargeted to m125, links libwebrtc-full.a statically), mediasoupclient/sdptransform xcframeworks (${LMSC_TAG} + m125 port patch), libwebrtc.a + libwebrtc-full.a per slice, headers (incl. Chromium libc++ __config_site/__assertion_handler), WebRTC.xcframework, SHA256SUMS, provenance.json, build-logs.zip. Built from GetStream/webrtc $WEBRTC_COMMIT with Stream's recipe ($STREAM_RECIPE). Swift wrapper: ${{ steps.wrap.outcome }}. GitHub attestation: ${{ steps.attest.outcome }}. See provenance.json and SHA256SUMS."
