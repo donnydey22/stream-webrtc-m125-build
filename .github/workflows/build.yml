@@ -64,7 +64,7 @@ jobs:
           mkdir -p $RUNNER_TEMP/slice/$S
           cp "$D/obj/libwebrtc.a" "$D/args.gn" $RUNNER_TEMP/slice/$S/
           # libwebrtc-full.a = libwebrtc.a + sdk (ObjC/native_api) objects + Chromium libc++/libc++abi (std::__Cr) objects
-          find "$D/obj/sdk" "$D/obj/buildtools/third_party" "$D/obj/third_party/libc++" "$D/obj/third_party/libc++abi" -name '*.o' 2>/dev/null | sort -u > $RUNNER_TEMP/extra.txt; wc -l $RUNNER_TEMP/extra.txt
+          find "$D/obj/sdk" "$D/obj/buildtools/third_party" "$D/obj/third_party/libc++" "$D/obj/third_party/libc++abi" -name '*.o' 2>/dev/null | sort -u > $RUNNER_TEMP/extra.txt || true; wc -l $RUNNER_TEMP/extra.txt
           xcrun libtool -static -no_warning_for_no_symbols -o $RUNNER_TEMP/slice/$S/libwebrtc-full.a "$D/obj/libwebrtc.a" -filelist $RUNNER_TEMP/extra.txt 2>&1 | grep -v "same member name" | head -20 || true; test -s $RUNNER_TEMP/slice/$S/libwebrtc-full.a; ls -la $RUNNER_TEMP/slice/$S/
           ditto "$(find "$HOME/out/WebRTC.xcframework" -name WebRTC.framework -type d | head -1)" $RUNNER_TEMP/slice/$S/WebRTC.framework
           "$HOME/webrtc/src/buildtools/mac/gn" args "$D" --list --short --overrides-only > $RUNNER_TEMP/slice/$S/gn-args-effective.txt || true
