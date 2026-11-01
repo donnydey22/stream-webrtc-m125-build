@@ -68,7 +68,9 @@ jobs:
           cp $RUNNER_TEMP/logs/depot_tools_commit.txt $RUNNER_TEMP/logs/deps-revinfo.txt $RUNNER_TEMP/slice/$S/
           if [ "$S" = "device-arm64" ]; then
             cd "$HOME/webrtc/src" && find . -path ./out -prune -o \( -name '*.h' -o -name '*.hpp' -o -name '*.inc' \) -type f -print \
-              | grep -v -E '^\./(out|third_party/(llvm-build|catapult|blink|android_|jdk|depot_tools))' | tar -czf $RUNNER_TEMP/slice/webrtc-m125-headers.tar.gz -T -
+              | grep -v -E '^\./(out|third_party/(llvm-build|catapult|blink|android_|jdk|depot_tools))' > $RUNNER_TEMP/hl.txt
+            for d in third_party/libc++/src/include buildtools/third_party/libc++ third_party/libc++abi/src/include; do [ -d $d ] && find $d -type f >> $RUNNER_TEMP/hl.txt; done
+            tar -czf $RUNNER_TEMP/slice/webrtc-m125-headers.tar.gz -T $RUNNER_TEMP/hl.txt
           fi
           ls -la $RUNNER_TEMP/slice/*; df -h /
       - uses: actions/upload-artifact@v4
@@ -104,11 +106,12 @@ jobs:
           build() { # $1 name $2 sdk $3 arch $4 slice
             cmake -S lmsc -B b/$1 -G Xcode -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=$2 -DCMAKE_OSX_ARCHITECTURES=$3 \
               -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 -DLIBWEBRTC_INCLUDE_PATH=$PWD/hdr -DLIBWEBRTC_BINARY_PATH=$PWD/s/$4 \
-              -DMEDIASOUPCLIENT_BUILD_TESTS=OFF -DLIBSDPTRANSFORM_BUILD_TESTS=OFF -DCMAKE_CXX_FLAGS="-fvisibility=hidden -fno-rtti" \
+              -DMEDIASOUPCLIENT_BUILD_TESTS=OFF -DLIBSDPTRANSFORM_BUILD_TESTS=OFF -DCMAKE_CXX_FLAGS="-fvisibility=hidden -fno-rtti $LIBCXX_FLAGS" \
               -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO
             cmake --build b/$1 --config Release -- -quiet 2>&1 | tee -a logs/lmsc-$1.txt | grep -E "error|BUILD" || true
             find b/$1 -name 'lib*.a' | tee logs/lmsc-$1-libs.txt
           }
+          if grep -q 'use_custom_libcxx = false' s/device-arm64/gn-args-effective.txt; then LIBCXX_FLAGS=; else LIBCXX_FLAGS="-nostdinc++ -isystem $PWD/hdr/buildtools/third_party/libc++ -isystem $PWD/hdr/third_party/libc++/src/include -isystem $PWD/hdr/third_party/libc++abi/src/include"; fi; echo "LIBCXX_FLAGS=$LIBCXX_FLAGS" | tee logs/libcxx.txt
           build dev iphoneos arm64 device-arm64
           build sima iphonesimulator arm64 simulator-arm64
           build simx iphonesimulator x86_64 simulator-x64
