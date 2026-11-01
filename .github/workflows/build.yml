@@ -1,111 +1,189 @@
-name: Build Stream WebRTC m125 (iOS) with provenance
+name: Stream WebRTC m125 + mediasoup (iOS) with provenance
 on:
   workflow_dispatch:
-    inputs:
-      webrtc_commit:
-        description: GetStream/webrtc commit (patch/m125 head behind StreamWebRTC 125.6422.070)
-        default: 45e8dd4698e9d181285269490003fb0971e3e6c6
-      archs:
-        description: build_ios_libs.py --arch values
-        default: "device:arm64 simulator:arm64"
   push:
     branches: [main]
+    paths: ['.github/workflows/build.yml']
 permissions:
-  contents: read
+  contents: write
   id-token: write
   attestations: write
 env:
   WEBRTC_REPO: https://github.com/GetStream/webrtc.git
-  WEBRTC_COMMIT: ${{ inputs.webrtc_commit || '45e8dd4698e9d181285269490003fb0971e3e6c6' }}
-  ARCHS: ${{ inputs.archs || 'device:arm64 simulator:arm64' }}
+  WEBRTC_COMMIT: 45e8dd4698e9d181285269490003fb0971e3e6c6   # GetStream/webrtc patch/m125 head behind StreamWebRTC 125.6422.070
+  STREAM_RECIPE: "stream-video-swift-webrtc@125.6422.070 fastlane/build_xcframework.sh"
+  GN_EXTRA: "is_debug=false use_goma=false use_rtti=false rtc_libvpx_build_vp9=true"
+  LMSC_REPO: https://github.com/VLprojects/libmediasoupclient.git
+  LMSC_TAG: vl-3.5.0.1
+  WRAP_REPO: https://github.com/VLprojects/mediasoup-client-swift.git
+  WRAP_TAG: 0.13.2
   STREAM_REF_URL: https://github.com/GetStream/stream-video-swift-webrtc/releases/download/125.6422.070/WebRTC.xcframework.zip
 jobs:
-  build:
+  webrtc:
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: ["device:arm64", "simulator:arm64", "simulator:x64"]
     runs-on: macos-15
     timeout-minutes: 355
     steps:
-      - uses: actions/checkout@v4
-      - name: Disk before
-        run: df -h / | tee -a logs.txt; mkdir -p logs; df -h / > logs/00-disk-before.txt
-      - name: Free disk
+      - name: Free disk + select Xcode 16
         run: |
-          set -x
-          ls /Applications | grep -i xcode || true
-          KEEP=$(ls -d /Applications/Xcode_16.[0-9]*.app | grep -v -i beta | sort -V | head -1); echo "keep $KEEP"; echo "KEEP_XCODE=$KEEP" >> $GITHUB_ENV
-          for x in /Applications/Xcode_*.app; do [ "$x" = "$KEEP" ] || [ -L "$x" ] || sudo rm -rf "$x" & done; wait
-          sudo rm -rf ~/Library/Android /usr/local/share/dotnet ~/.dotnet ~/hostedtoolcache /Users/runner/hostedtoolcache \
-            /usr/local/lib/node_modules ~/Library/Developer/CoreSimulator/Caches ~/.rustup ~/.cargo ~/.ghcup \
-            /Library/Developer/CoreSimulator/Images /Library/Developer/CoreSimulator/Volumes || true
-          xcrun simctl delete all || true
-          sudo xcode-select -s "$KEEP"; xcodebuild -version
-          df -h / | tee logs/01-disk-after-cleanup.txt
+          mkdir -p $RUNNER_TEMP/logs; df -h / | tee $RUNNER_TEMP/logs/disk.txt
+          KEEP=$(ls -d /Applications/Xcode_16.4.app 2>/dev/null || ls -d /Applications/Xcode_16*.app | sort -V | tail -1)
+          KEEP=$(cd "$KEEP" && pwd -P); echo "KEEP=$KEEP"
+          sudo xcode-select -s "$KEEP"; xcodebuild -version | tee -a $RUNNER_TEMP/logs/disk.txt
+          for x in /Applications/Xcode_*.app; do [ -L "$x" ] && continue; [ "$x" = "$KEEP" ] || sudo rm -rf "$x" & done; wait
+          sudo rm -rf ~/Library/Android /usr/local/share/dotnet ~/.dotnet ~/hostedtoolcache /Users/runner/hostedtoolcache ~/.rustup ~/.cargo ~/.ghcup || true
+          df -h / | tee -a $RUNNER_TEMP/logs/disk.txt
       - name: depot_tools
         run: |
           git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git "$HOME/depot_tools"
           echo "$HOME/depot_tools" >> $GITHUB_PATH
-          echo "DEPOT_TOOLS_COMMIT=$(git -C $HOME/depot_tools rev-parse HEAD)" >> $GITHUB_ENV
-      - name: gclient sync (no history)
+          git -C $HOME/depot_tools rev-parse HEAD > $RUNNER_TEMP/logs/depot_tools_commit.txt
+      - name: gclient sync (pinned, no history)
         env: { DEPOT_TOOLS_UPDATE: "0" }
         run: |
-          mkdir -p "$HOME/webrtc" && cd "$HOME/webrtc"
-          cat > .gclient <<G
-          solutions = [{ "name": "src", "url": "$WEBRTC_REPO@$WEBRTC_COMMIT", "deps_file": "DEPS", "managed": False, "custom_deps": {}, }]
-          target_os = ["ios", "mac"]
-          G
-          gclient sync --no-history --shallow --nohooks -j8 2>&1 | tee $GITHUB_WORKSPACE/logs/02-gclient-sync.txt | tail -50
-          gclient runhooks 2>&1 | tee $GITHUB_WORKSPACE/logs/03-runhooks.txt | tail -30
-          test "$(git -C src rev-parse HEAD)" = "$WEBRTC_COMMIT"
-          (cd src && gclient revinfo) > $GITHUB_WORKSPACE/logs/04-revinfo.txt 2>&1 || true
-          du -sh "$HOME/webrtc" | tee -a $GITHUB_WORKSPACE/logs/01-disk-after-cleanup.txt; df -h /
-      - name: Build xcframework
-        run: |
-          cd "$HOME/webrtc/src"
           set -o pipefail
-          python3 tools_webrtc/ios/build_ios_libs.py --arch $ARCHS --output-dir "$HOME/out_ios" \
-            --extra-gn-args is_debug=false rtc_include_tests=false rtc_enable_protobuf=false treat_warnings_as_errors=false \
-            2>&1 | tee $GITHUB_WORKSPACE/logs/05-build.txt | grep -E "ninja|error|Error|\[[0-9]+/[0-9]+\]" | awk 'NR%200==1 || /rror/'
-          df -h / | tee logs_disk_final.txt
-      - name: Package + checksums + provenance
+          mkdir -p "$HOME/webrtc" && cd "$HOME/webrtc"
+          printf 'solutions = [{"name":"src","url":"%s@%s","deps_file":"DEPS","managed":False,"custom_deps":{}}]\ntarget_os = ["ios","mac"]\n' "$WEBRTC_REPO" "$WEBRTC_COMMIT" > .gclient
+          gclient sync --no-history --shallow -j8 2>&1 | tee $RUNNER_TEMP/logs/gclient-sync.txt | tail -40
+          test "$(git -C src rev-parse HEAD)" = "$WEBRTC_COMMIT"
+          (cd src && gclient revinfo) > $RUNNER_TEMP/logs/deps-revinfo.txt 2>&1 || true
+          du -sh "$HOME/webrtc"; df -h / | tee -a $RUNNER_TEMP/logs/disk.txt
+      - name: Build (Stream recipe, one slice) + libwebrtc.a
         run: |
-          mkdir -p dist && cd "$HOME/out_ios"
-          ls -la
-          for d in */; do [ -f "$d/args.gn" ] && cp "$d/args.gn" "$GITHUB_WORKSPACE/logs/args-${d%/}.gn"; done
-          ditto -c -k --keepParent WebRTC.xcframework "$GITHUB_WORKSPACE/dist/WebRTC.xcframework.zip"
-          cd "$GITHUB_WORKSPACE/dist"
-          shasum -a 256 WebRTC.xcframework.zip > SHA256SUMS
-          ( cd "$HOME/out_ios" && find WebRTC.xcframework -type f -exec shasum -a 256 {} \; ) > SHA256SUMS-contents
-          python3 - <<P
-          import json,os,subprocess,glob
-          sh=lambda c: subprocess.run(c,shell=True,capture_output=True,text=True).stdout.strip()
-          gn={os.path.basename(f):open(f).read() for f in glob.glob(os.environ['GITHUB_WORKSPACE']+'/logs/args-*.gn')}
-          json.dump({
-            "artifact":"WebRTC.xcframework.zip",
-            "sha256":open('SHA256SUMS').read().split()[0],
-            "source":{"repo":os.environ['WEBRTC_REPO'],"commit":os.environ['WEBRTC_COMMIT'],"branch":"patch/m125",
-                      "lineage":"StreamWebRTC 125.6422.070 (pod dep of @stream-io/react-native-webrtc 125.4.5)"},
-            "depot_tools_commit":os.environ['DEPOT_TOOLS_COMMIT'],
-            "archs":os.environ['ARCHS'],
-            "gn_args":gn,
-            "runner":{"image":os.environ.get('ImageOS'),"image_version":os.environ.get('ImageVersion'),"os":sh('sw_vers'),"arch":sh('uname -m')},
-            "xcode":sh('xcodebuild -version'),"sdk":sh('xcrun --sdk iphoneos --show-sdk-version'),
-            "workflow_run":f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
-            "workflow_sha":os.environ['GITHUB_SHA']},open('provenance.json','w'),indent=2)
-          P
-          cp "$GITHUB_WORKSPACE/logs/04-revinfo.txt" deps-revinfo.txt
-          cat SHA256SUMS provenance.json
+          set -o pipefail
+          cd "$HOME/webrtc/src"
+          python3 tools_webrtc/ios/build_ios_libs.py --arch ${{ matrix.arch }} --deployment-target 13.0 \
+            --output-dir "$HOME/out" --extra-gn-args $GN_EXTRA 2>&1 | tee $RUNNER_TEMP/logs/build.txt | grep -E "rror|FAILED|^\[[0-9]+00/" || true
+          test -d "$HOME/out/WebRTC.xcframework"
+          D=$(dirname $(find "$HOME/out" -name args.gn | head -1)); echo "build dir $D"
+          ninja -C "$D" webrtc 2>&1 | tee $RUNNER_TEMP/logs/ninja-webrtc.txt | tail -3
+          S=$(echo "${{ matrix.arch }}" | tr ':' '-'); echo "SLICE=$S" >> $GITHUB_ENV
+          mkdir -p $RUNNER_TEMP/slice/$S
+          cp "$D/obj/libwebrtc.a" "$D/args.gn" $RUNNER_TEMP/slice/$S/
+          ditto "$(find "$HOME/out/WebRTC.xcframework" -name WebRTC.framework -type d | head -1)" $RUNNER_TEMP/slice/$S/WebRTC.framework
+          gn args "$D" --list --short --overrides-only > $RUNNER_TEMP/slice/$S/gn-args-effective.txt || true
+          cp $RUNNER_TEMP/logs/depot_tools_commit.txt $RUNNER_TEMP/logs/deps-revinfo.txt $RUNNER_TEMP/slice/$S/
+          if [ "$S" = "device-arm64" ]; then
+            cd "$HOME/webrtc/src" && find . -path ./out -prune -o \( -name '*.h' -o -name '*.hpp' -o -name '*.inc' \) -type f -print \
+              | grep -v -E '^\./(out|third_party/(llvm-build|catapult|blink|android_|jdk|depot_tools))' | tar -czf $RUNNER_TEMP/slice/webrtc-m125-headers.tar.gz -T -
+          fi
+          ls -la $RUNNER_TEMP/slice/*; df -h /
+      - uses: actions/upload-artifact@v4
+        with: { name: "slice-${{ env.SLICE }}", path: "${{ runner.temp }}/slice", retention-days: 30, compression-level: 1 }
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with: { name: "logs-webrtc-${{ strategy.job-index }}", path: "${{ runner.temp }}/logs", retention-days: 90 }
+
+  assemble:
+    needs: webrtc
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { pattern: "slice-*", path: s, merge-multiple: true }
+      - name: Select Xcode 16
+        run: sudo xcode-select -s "$(cd $(ls -d /Applications/Xcode_16.4.app 2>/dev/null || ls -d /Applications/Xcode_16*.app | sort -V | tail -1) && pwd -P)"; xcodebuild -version
+      - name: WebRTC.xcframework + static libs + headers
+        run: |
+          set -ex; mkdir -p dist logs; cd s; ls -R | head -50
+          mkdir -p sim/WebRTC.framework; ditto simulator-arm64/WebRTC.framework sim/WebRTC.framework
+          lipo -create simulator-arm64/WebRTC.framework/WebRTC simulator-x64/WebRTC.framework/WebRTC -output sim/WebRTC.framework/WebRTC
+          xcodebuild -create-xcframework -framework device-arm64/WebRTC.framework -framework sim/WebRTC.framework -output ../out/WebRTC.xcframework
+          (cd ../out && ditto -c -k --keepParent WebRTC.xcframework ../dist/WebRTC.xcframework.zip)
+          for S in device-arm64 simulator-arm64 simulator-x64; do cp $S/libwebrtc.a ../dist/libwebrtc-ios-$S.a; cp $S/args.gn ../logs/args-$S.gn; cp $S/gn-args-effective.txt ../logs/gn-effective-$S.txt; done
+          cp webrtc-m125-headers.tar.gz ../dist/
+          cp device-arm64/deps-revinfo.txt ../dist/deps-revinfo.txt; cp device-arm64/depot_tools_commit.txt ../logs/
+      - name: libmediasoupclient against this libwebrtc
+        run: |
+          set -ex
+          mkdir -p hdr && tar -xzf s/webrtc-m125-headers.tar.gz -C hdr
+          git clone -q --depth 1 -b $LMSC_TAG $LMSC_REPO lmsc; git -C lmsc rev-parse HEAD > logs/lmsc_commit.txt
+          build() { # $1 name $2 sdk $3 arch $4 slice
+            cmake -S lmsc -B b/$1 -G Xcode -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=$2 -DCMAKE_OSX_ARCHITECTURES=$3 \
+              -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 -DLIBWEBRTC_INCLUDE_PATH=$PWD/hdr -DLIBWEBRTC_BINARY_PATH=$PWD/s/$4 \
+              -DMEDIASOUPCLIENT_BUILD_TESTS=OFF -DLIBSDPTRANSFORM_BUILD_TESTS=OFF -DCMAKE_CXX_FLAGS="-fvisibility=hidden -fno-rtti" \
+              -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO
+            cmake --build b/$1 --config Release -- -quiet 2>&1 | tee -a logs/lmsc-$1.txt | grep -E "error|BUILD" || true
+            find b/$1 -name 'lib*.a' | tee logs/lmsc-$1-libs.txt
+          }
+          build dev iphoneos arm64 device-arm64
+          build sima iphonesimulator arm64 simulator-arm64
+          build simx iphonesimulator x86_64 simulator-x64
+          f() { find b/$1 -name "$2" -path '*Release*' | head -1; }
+          for L in libmediasoupclient.a libsdptransform.a; do
+            mkdir -p fat; lipo -create $(f sima $L) $(f simx $L) -output fat/$L
+            N=$(basename $L .a | sed 's/^lib//')
+            mkdir -p inc/$N; [ $N = mediasoupclient ] && cp -R lmsc/include/* inc/$N/ || cp -R $(dirname $(find b/dev lmsc -name sdptransform.hpp | head -1))/* inc/$N/ 2>/dev/null || true
+            printf 'module %s {\n  umbrella "."\n  requires cplusplus\n  export *\n}\n' $N > inc/$N/module.modulemap
+            xcodebuild -create-xcframework -library $(f dev $L) -headers inc/$N -library fat/$L -headers inc/$N -output out/$N.xcframework
+            (cd out && ditto -c -k --keepParent $N.xcframework ../dist/$N.xcframework.zip)
+          done
+      - name: Swift wrapper (VLprojects mediasoup-client-swift, retargeted to m125)
+        id: wrap
+        continue-on-error: true
+        run: |
+          set -ex
+          git clone -q --depth 1 -b $WRAP_TAG $WRAP_REPO wrap; git -C wrap rev-parse HEAD > logs/wrap_commit.txt
+          mkdir -p wrap/bin wrap/Mediasoup/dependencies/webrtc
+          cp -R out/WebRTC.xcframework out/mediasoupclient.xcframework out/sdptransform.xcframework wrap/bin/
+          ln -s $PWD/hdr wrap/Mediasoup/dependencies/webrtc/src; ln -s $PWD/lmsc wrap/Mediasoup/dependencies/libmediasoupclient
+          cd wrap
+          for sdk in iphoneos iphonesimulator; do
+            A=$([ $sdk = iphoneos ] && echo "-arch arm64" || echo "-arch arm64 -arch x86_64")
+            xcodebuild -project Mediasoup.xcodeproj -scheme Mediasoup -configuration Release -sdk $sdk $A ONLY_ACTIVE_ARCH=NO \
+              IPHONEOS_DEPLOYMENT_TARGET=13.0 BUILD_LIBRARY_FOR_DISTRIBUTION=YES CODE_SIGNING_ALLOWED=NO -derivedDataPath dd 2>&1 \
+              | tee -a ../logs/wrapper-$sdk.txt | grep -E "error:|Undefined|BUILD (SUCCEEDED|FAILED)" | head -80
+            test -d dd/Build/Products/Release-$sdk/Mediasoup.framework
+          done
+          xcodebuild -create-xcframework -framework dd/Build/Products/Release-iphoneos/Mediasoup.framework \
+            -framework dd/Build/Products/Release-iphonesimulator/Mediasoup.framework -output ../out/Mediasoup.xcframework
+          cd ../out && ditto -c -k --keepParent Mediasoup.xcframework ../dist/Mediasoup.xcframework.zip
       - name: Compare with Stream published 125.6422.070 (informational)
         continue-on-error: true
         run: |
-          cd dist; curl -sSL -o stream-ref.zip "$STREAM_REF_URL"
-          shasum -a 256 stream-ref.zip | tee stream-ref.sha256
-          mkdir ref && ditto -x -k stream-ref.zip ref && find ref -maxdepth 3 | head -30 | tee -a stream-ref.sha256
-          rm -rf ref stream-ref.zip
-          echo "Note: byte-identical match not expected (different toolchain/archs/paths)." >> stream-ref.sha256
+          curl -sSL -o ref.zip "$STREAM_REF_URL"; shasum -a 256 ref.zip > logs/stream-published-125.6422.070.sha256
+          mkdir ref && ditto -x -k ref.zip ref
+          for s in ios-arm64 ios-arm64_x86_64-simulator; do echo "$s ours vs stream:"; ls -la out/WebRTC.xcframework/$s/WebRTC.framework/WebRTC ref/WebRTC.xcframework/$s/WebRTC.framework/WebRTC 2>&1; done | tee -a logs/stream-published-125.6422.070.sha256
+      - name: Checksums + provenance.json
+        env: { WRAP_OUTCOME: "${{ steps.wrap.outcome }}" }
+        run: |
+          cd dist; shasum -a 256 * > SHA256SUMS; cat SHA256SUMS
+          python3 - <<'P'
+          import json,os,glob,subprocess
+          sh=lambda c: subprocess.run(c,shell=True,capture_output=True,text=True).stdout.strip()
+          rd=lambda f: open(f).read().strip() if os.path.exists(f) else None
+          L='../logs/'
+          json.dump({
+           "artifacts":{l.split()[1]:l.split()[0] for l in open('SHA256SUMS')},
+           "webrtc":{"repo":os.environ['WEBRTC_REPO'],"commit":os.environ['WEBRTC_COMMIT'],"branch":"patch/m125",
+             "lineage":"StreamWebRTC pod 125.6422.070 (dependency ~>125.6422.070 of @stream-io/react-native-webrtc 125.4.5)",
+             "recipe":os.environ['STREAM_RECIPE'],"build_ios_libs_extra_gn_args":os.environ['GN_EXTRA'],"deployment_target":"13.0",
+             "args_gn":{os.path.basename(f):open(f).read() for f in glob.glob(L+'args-*.gn')}},
+           "depot_tools_commit":rd(L+'depot_tools_commit.txt'),
+           "libmediasoupclient":{"repo":os.environ['LMSC_REPO'],"tag":os.environ['LMSC_TAG'],"commit":rd(L+'lmsc_commit.txt')},
+           "swift_wrapper":{"repo":os.environ['WRAP_REPO'],"tag":os.environ['WRAP_TAG'],"commit":rd(L+'wrap_commit.txt'),"outcome":os.environ['WRAP_OUTCOME']},
+           "stream_published_reference":rd(L+'stream-published-125.6422.070.sha256'),
+           "runner":{"image":os.environ.get('ImageOS'),"image_version":os.environ.get('ImageVersion'),"os":sh('sw_vers'),"arch":sh('uname -m')},
+           "xcode":sh('xcodebuild -version'),"ios_sdk":sh('xcrun --sdk iphoneos --show-sdk-version'),
+           "workflow_run":f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+           "workflow_commit":os.environ['GITHUB_SHA']},open('provenance.json','w'),indent=2)
+          P
+          shasum -a 256 provenance.json >> SHA256SUMS
       - uses: actions/attest-build-provenance@v2
-        with: { subject-path: dist/WebRTC.xcframework.zip }
         continue-on-error: true
+        with: { subject-path: "dist/*.zip, dist/*.a, dist/*.tar.gz" }
       - uses: actions/upload-artifact@v4
-        with: { name: StreamWebRTC-m125-ios-xcframework, path: dist/, retention-days: 90 }
+        with: { name: StreamWebRTC-m125-mediasoup-ios, path: dist/, retention-days: 90, compression-level: 0 }
       - if: always()
         uses: actions/upload-artifact@v4
-        with: { name: build-logs, path: logs/, retention-days: 90 }
+        with: { name: logs-assemble, path: logs/, retention-days: 90 }
+      - name: GitHub Release
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          (cd logs && zip -qr ../dist/build-logs.zip .)
+          T=m125-stream-125.6422.070-run${{ github.run_id }}
+          gh release create "$T" dist/* -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" -t "Stream WebRTC m125 (125.6422.070 lineage) + libmediasoupclient, iOS" \
+            -n "Built from GetStream/webrtc $WEBRTC_COMMIT with Stream's recipe ($STREAM_RECIPE). Swift wrapper step: ${{ steps.wrap.outcome }}. See provenance.json and SHA256SUMS."
