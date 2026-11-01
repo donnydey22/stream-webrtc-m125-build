@@ -59,12 +59,12 @@ jobs:
             --output-dir "$HOME/out" --extra-gn-args $GN_EXTRA 2>&1 | tee $RUNNER_TEMP/logs/build.txt | grep -E "rror|FAILED|^\[[0-9]+00/" || true
           test -d "$HOME/out/WebRTC.xcframework"
           D=$(dirname $(find "$HOME/out" -name args.gn | head -1)); echo "build dir $D"
-          ninja -C "$D" webrtc 2>&1 | tee $RUNNER_TEMP/logs/ninja-webrtc.txt | tail -3
+          "$HOME/webrtc/src/third_party/ninja/ninja" -C "$D" webrtc 2>&1 | tee $RUNNER_TEMP/logs/ninja-webrtc.txt | tail -3; test -f "$D/obj/libwebrtc.a"
           S=$(echo "${{ matrix.arch }}" | tr ':' '-'); echo "SLICE=$S" >> $GITHUB_ENV
           mkdir -p $RUNNER_TEMP/slice/$S
           cp "$D/obj/libwebrtc.a" "$D/args.gn" $RUNNER_TEMP/slice/$S/
           ditto "$(find "$HOME/out/WebRTC.xcframework" -name WebRTC.framework -type d | head -1)" $RUNNER_TEMP/slice/$S/WebRTC.framework
-          gn args "$D" --list --short --overrides-only > $RUNNER_TEMP/slice/$S/gn-args-effective.txt || true
+          "$HOME/webrtc/src/buildtools/mac/gn" args "$D" --list --short --overrides-only > $RUNNER_TEMP/slice/$S/gn-args-effective.txt || true
           cp $RUNNER_TEMP/logs/depot_tools_commit.txt $RUNNER_TEMP/logs/deps-revinfo.txt $RUNNER_TEMP/slice/$S/
           if [ "$S" = "device-arm64" ]; then
             cd "$HOME/webrtc/src" && find . -path ./out -prune -o \( -name '*.h' -o -name '*.hpp' -o -name '*.inc' \) -type f -print \
