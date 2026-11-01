@@ -47,6 +47,8 @@ jobs:
           set -ex
           mkdir -p hdr && tar -xzf s/webrtc-m125-headers.tar.gz -C hdr
           git clone -q --depth 1 -b $LMSC_TAG $LMSC_REPO lmsc; git -C lmsc rev-parse HEAD > logs/lmsc_commit.txt
+          grep -rl 'cricket::CodecParameterMap' lmsc/src lmsc/include | xargs sed -i '' 's/cricket::CodecParameterMap/webrtc::CodecParameterMap/g' || true
+          git -C lmsc diff > logs/lmsc-m125-port.patch; cat logs/lmsc-m125-port.patch | head -40
           build() { # $1 name $2 sdk $3 arch $4 slice
             cmake -S lmsc -B b/$1 -G Xcode -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=$2 -DCMAKE_OSX_ARCHITECTURES=$3 \
               -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 -DLIBWEBRTC_INCLUDE_PATH=$PWD/hdr -DLIBWEBRTC_BINARY_PATH=$PWD/s/$4 \
