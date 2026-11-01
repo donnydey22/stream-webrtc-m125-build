@@ -8,6 +8,7 @@ on:
     paths: ['.github/workflows/assemble.yml']
 permissions:
   contents: write
+  actions: read
   id-token: write
   attestations: write
 env:
