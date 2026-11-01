@@ -17,9 +17,9 @@ env:
   STREAM_RECIPE: "stream-video-swift-webrtc@125.6422.070 fastlane/build_xcframework.sh"
   GN_EXTRA: "is_debug=false use_goma=false use_rtti=false rtc_libvpx_build_vp9=true"
   LMSC_REPO: https://github.com/VLprojects/libmediasoupclient.git
-  LMSC_TAG: vl-3.5.0.1
+  LMSC_TAG: vl-3.4.3
   WRAP_REPO: https://github.com/VLprojects/mediasoup-client-swift.git
-  WRAP_TAG: 0.13.2
+  WRAP_TAG: 0.11.0   # VL release targeting m120 (closest to m125)
   STREAM_REF_URL: https://github.com/GetStream/stream-video-swift-webrtc/releases/download/125.6422.070/WebRTC.xcframework.zip
 jobs:
   assemble:
@@ -55,7 +55,7 @@ jobs:
             cmake --build b/$1 --config Release --target mediasoupclient -- -quiet 2>&1 | tee -a logs/lmsc-$1.txt | grep -E "error|BUILD" | head -40 || true
             find b/$1 -name 'lib*.a' | tee logs/lmsc-$1-libs.txt; grep -q libmediasoupclient.a logs/lmsc-$1-libs.txt
           }
-          if grep -q 'use_custom_libcxx = false' s/device-arm64/gn-args-effective.txt; then LIBCXX_FLAGS=; else LIBCXX_FLAGS="-nostdinc++ -isystem $PWD/hdr/buildtools/third_party/libc++ -isystem $PWD/hdr/third_party/libc++/src/include -isystem $PWD/hdr/third_party/libc++abi/src/include -D_LIBCPP_HARDENING_MODE_DEFAULT=_LIBCPP_HARDENING_MODE_NONE"; fi; echo "LIBCXX_FLAGS=$LIBCXX_FLAGS" | tee logs/libcxx.txt; echo "LIBCXX_FLAGS=$LIBCXX_FLAGS" >> $GITHUB_ENV
+          if grep -q 'use_custom_libcxx = false' s/device-arm64/gn-args-effective.txt; then LIBCXX_FLAGS=; else LIBCXX_FLAGS="-nostdinc++ -isystem $PWD/hdr/buildtools/third_party/libc++ -isystem $PWD/hdr/third_party/libc++/src/include -isystem $PWD/hdr/third_party/libc++abi/src/include -D_LIBCPP_HARDENING_MODE_DEFAULT=_LIBCPP_HARDENING_MODE_NONE -DWEBRTC_POSIX -DWEBRTC_MAC -DWEBRTC_IOS"; fi; echo "LIBCXX_FLAGS=$LIBCXX_FLAGS" | tee logs/libcxx.txt; echo "LIBCXX_FLAGS=$LIBCXX_FLAGS" >> $GITHUB_ENV
           build dev iphoneos arm64 device-arm64
           build sima iphonesimulator arm64 simulator-arm64
           build simx iphonesimulator x86_64 simulator-x64
