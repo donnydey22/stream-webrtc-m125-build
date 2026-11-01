@@ -1,0 +1,110 @@
+name: Build Stream WebRTC m125 (iOS) with provenance
+on:
+  workflow_dispatch:
+    inputs:
+      webrtc_commit:
+        description: GetStream/webrtc commit (patch/m125 head behind StreamWebRTC 125.6422.070)
+        default: 45e8dd4698e9d181285269490003fb0971e3e6c6
+      archs:
+        description: build_ios_libs.py --arch values
+        default: "device:arm64 simulator:arm64"
+  push:
+    branches: [main]
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+env:
+  WEBRTC_REPO: https://github.com/GetStream/webrtc.git
+  WEBRTC_COMMIT: ${{ inputs.webrtc_commit || '45e8dd4698e9d181285269490003fb0971e3e6c6' }}
+  ARCHS: ${{ inputs.archs || 'device:arm64 simulator:arm64' }}
+  STREAM_REF_URL: https://github.com/GetStream/stream-video-swift-webrtc/releases/download/125.6422.070/WebRTC.xcframework.zip
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+      - name: Disk before
+        run: df -h / | tee -a logs.txt; mkdir -p logs; df -h / > logs/00-disk-before.txt
+      - name: Free disk
+        run: |
+          set -x
+          ls /Applications | grep -i xcode || true
+          for x in /Applications/Xcode_*.app; do [ "$x" = "/Applications/Xcode_15.4.app" ] || sudo rm -rf "$x" & done; wait
+          sudo rm -rf ~/Library/Android /usr/local/share/dotnet ~/.dotnet ~/hostedtoolcache /Users/runner/hostedtoolcache \
+            /usr/local/lib/node_modules ~/Library/Developer/CoreSimulator/Caches ~/.rustup ~/.cargo ~/.ghcup \
+            /Library/Developer/CoreSimulator/Images /Library/Developer/CoreSimulator/Volumes || true
+          xcrun simctl delete all || true
+          sudo xcode-select -s /Applications/Xcode_15.4.app
+          df -h / | tee logs/01-disk-after-cleanup.txt
+      - name: depot_tools
+        run: |
+          git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git "$HOME/depot_tools"
+          echo "$HOME/depot_tools" >> $GITHUB_PATH
+          echo "DEPOT_TOOLS_COMMIT=$(git -C $HOME/depot_tools rev-parse HEAD)" >> $GITHUB_ENV
+      - name: gclient sync (no history)
+        env: { DEPOT_TOOLS_UPDATE: "0" }
+        run: |
+          mkdir -p "$HOME/webrtc" && cd "$HOME/webrtc"
+          cat > .gclient <<G
+          solutions = [{ "name": "src", "url": "$WEBRTC_REPO@$WEBRTC_COMMIT", "deps_file": "DEPS", "managed": False, "custom_deps": {}, }]
+          target_os = ["ios", "mac"]
+          G
+          gclient sync --no-history --shallow --nohooks -j8 2>&1 | tee $GITHUB_WORKSPACE/logs/02-gclient-sync.txt | tail -50
+          gclient runhooks 2>&1 | tee $GITHUB_WORKSPACE/logs/03-runhooks.txt | tail -30
+          test "$(git -C src rev-parse HEAD)" = "$WEBRTC_COMMIT"
+          (cd src && gclient revinfo) > $GITHUB_WORKSPACE/logs/04-revinfo.txt 2>&1 || true
+          du -sh "$HOME/webrtc" | tee -a $GITHUB_WORKSPACE/logs/01-disk-after-cleanup.txt; df -h /
+      - name: Build xcframework
+        run: |
+          cd "$HOME/webrtc/src"
+          set -o pipefail
+          python3 tools_webrtc/ios/build_ios_libs.py --arch $ARCHS --output-dir "$HOME/out_ios" \
+            --extra-gn-args is_debug=false rtc_include_tests=false rtc_enable_protobuf=false treat_warnings_as_errors=false \
+            2>&1 | tee $GITHUB_WORKSPACE/logs/05-build.txt | grep -E "ninja|error|Error|\[[0-9]+/[0-9]+\]" | awk 'NR%200==1 || /rror/'
+          df -h / | tee logs_disk_final.txt
+      - name: Package + checksums + provenance
+        run: |
+          mkdir -p dist && cd "$HOME/out_ios"
+          ls -la
+          for d in */; do [ -f "$d/args.gn" ] && cp "$d/args.gn" "$GITHUB_WORKSPACE/logs/args-${d%/}.gn"; done
+          ditto -c -k --keepParent WebRTC.xcframework "$GITHUB_WORKSPACE/dist/WebRTC.xcframework.zip"
+          cd "$GITHUB_WORKSPACE/dist"
+          shasum -a 256 WebRTC.xcframework.zip > SHA256SUMS
+          ( cd "$HOME/out_ios" && find WebRTC.xcframework -type f -exec shasum -a 256 {} \; ) > SHA256SUMS-contents
+          python3 - <<P
+          import json,os,subprocess,glob
+          sh=lambda c: subprocess.run(c,shell=True,capture_output=True,text=True).stdout.strip()
+          gn={os.path.basename(f):open(f).read() for f in glob.glob(os.environ['GITHUB_WORKSPACE']+'/logs/args-*.gn')}
+          json.dump({
+            "artifact":"WebRTC.xcframework.zip",
+            "sha256":open('SHA256SUMS').read().split()[0],
+            "source":{"repo":os.environ['WEBRTC_REPO'],"commit":os.environ['WEBRTC_COMMIT'],"branch":"patch/m125",
+                      "lineage":"StreamWebRTC 125.6422.070 (pod dep of @stream-io/react-native-webrtc 125.4.5)"},
+            "depot_tools_commit":os.environ['DEPOT_TOOLS_COMMIT'],
+            "archs":os.environ['ARCHS'],
+            "gn_args":gn,
+            "runner":{"image":os.environ.get('ImageOS'),"image_version":os.environ.get('ImageVersion'),"os":sh('sw_vers'),"arch":sh('uname -m')},
+            "xcode":sh('xcodebuild -version'),"sdk":sh('xcrun --sdk iphoneos --show-sdk-version'),
+            "workflow_run":f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+            "workflow_sha":os.environ['GITHUB_SHA']},open('provenance.json','w'),indent=2)
+          P
+          cp "$GITHUB_WORKSPACE/logs/04-revinfo.txt" deps-revinfo.txt
+          cat SHA256SUMS provenance.json
+      - name: Compare with Stream published 125.6422.070 (informational)
+        continue-on-error: true
+        run: |
+          cd dist; curl -sSL -o stream-ref.zip "$STREAM_REF_URL"
+          shasum -a 256 stream-ref.zip | tee stream-ref.sha256
+          mkdir ref && ditto -x -k stream-ref.zip ref && find ref -maxdepth 3 | head -30 | tee -a stream-ref.sha256
+          rm -rf ref stream-ref.zip
+          echo "Note: byte-identical match not expected (different toolchain/archs/paths)." >> stream-ref.sha256
+      - uses: actions/attest-build-provenance@v2
+        with: { subject-path: dist/WebRTC.xcframework.zip }
+        continue-on-error: true
+      - uses: actions/upload-artifact@v4
+        with: { name: StreamWebRTC-m125-ios-xcframework, path: dist/, retention-days: 90 }
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with: { name: build-logs, path: logs/, retention-days: 90 }
