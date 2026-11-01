@@ -21,7 +21,7 @@ env:
   STREAM_REF_URL: https://github.com/GetStream/stream-video-swift-webrtc/releases/download/125.6422.070/WebRTC.xcframework.zip
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 355
     steps:
       - uses: actions/checkout@v4
@@ -31,12 +31,13 @@ jobs:
         run: |
           set -x
           ls /Applications | grep -i xcode || true
-          for x in /Applications/Xcode_*.app; do [ "$x" = "/Applications/Xcode_15.4.app" ] || sudo rm -rf "$x" & done; wait
+          KEEP=$(ls -d /Applications/Xcode_16.[0-9]*.app | grep -v -i beta | sort -V | head -1); echo "keep $KEEP"; echo "KEEP_XCODE=$KEEP" >> $GITHUB_ENV
+          for x in /Applications/Xcode_*.app; do [ "$x" = "$KEEP" ] || [ -L "$x" ] || sudo rm -rf "$x" & done; wait
           sudo rm -rf ~/Library/Android /usr/local/share/dotnet ~/.dotnet ~/hostedtoolcache /Users/runner/hostedtoolcache \
             /usr/local/lib/node_modules ~/Library/Developer/CoreSimulator/Caches ~/.rustup ~/.cargo ~/.ghcup \
             /Library/Developer/CoreSimulator/Images /Library/Developer/CoreSimulator/Volumes || true
           xcrun simctl delete all || true
-          sudo xcode-select -s /Applications/Xcode_15.4.app
+          sudo xcode-select -s "$KEEP"; xcodebuild -version
           df -h / | tee logs/01-disk-after-cleanup.txt
       - name: depot_tools
         run: |
