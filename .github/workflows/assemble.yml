@@ -65,16 +65,15 @@ jobs:
           for L in libmediasoupclient.a libsdptransform.a; do
             mkdir -p fat; lipo -create $(f sima $L) $(f simx $L) -output fat/$L
             N=$(basename $L .a | sed 's/^lib//')
-            mkdir -p inc/$N; [ $N = mediasoupclient ] && cp -R lmsc/include/* inc/$N/ || cp -R $(dirname $(find b/dev lmsc -name sdptransform.hpp | head -1))/* inc/$N/ 2>/dev/null || true
-            printf 'module %s {\n  umbrella "."\n  requires cplusplus\n  export *\n}\n' $N > inc/$N/module.modulemap
+            mkdir -p inc/$N/$N; [ $N = mediasoupclient ] && cp -R lmsc/include/* inc/$N/$N/ || cp -R $(dirname $(find b/dev lmsc -name sdptransform.hpp | head -1))/* inc/$N/$N/ 2>/dev/null || true
+            printf 'module %s {\n  umbrella "."\n  requires cplusplus\n  export *\n}\n' $N > inc/$N/$N/module.modulemap
             xcodebuild -create-xcframework -library $(f dev $L) -headers inc/$N -library fat/$L -headers inc/$N -output out/$N.xcframework
             (cd out && ditto -c -k --keepParent $N.xcframework ../dist/$N.xcframework.zip)
           done
       - name: Swift wrapper (VLprojects mediasoup-client-swift, retargeted to m125)
         id: wrap
-        continue-on-error: true
         run: |
-          set -ex
+          set -ex -o pipefail
           git clone -q --depth 1 -b $WRAP_TAG $WRAP_REPO wrap; git -C wrap rev-parse HEAD > logs/wrap_commit.txt
           mkdir -p wrap/bin wrap/Mediasoup/dependencies/webrtc
           cp -R out/WebRTC.xcframework out/mediasoupclient.xcframework out/sdptransform.xcframework wrap/bin/
@@ -85,7 +84,8 @@ jobs:
             LW=$([ $sdk = iphoneos ] && echo "$GITHUB_WORKSPACE/s/device-arm64/libwebrtc.a" || echo "$GITHUB_WORKSPACE/libwebrtc-sim.a")
             xcodebuild -project Mediasoup.xcodeproj -scheme Mediasoup -configuration Release -sdk $sdk $A ONLY_ACTIVE_ARCH=NO \
               IPHONEOS_DEPLOYMENT_TARGET=13.0 BUILD_LIBRARY_FOR_DISTRIBUTION=YES CODE_SIGNING_ALLOWED=NO "OTHER_LDFLAGS=\$(inherited) $LW" "OTHER_CPLUSPLUSFLAGS=\$(inherited) $LIBCXX_FLAGS" -derivedDataPath dd 2>&1 \
-              | tee -a ../logs/wrapper-$sdk.txt | grep -E "error:|Undefined|BUILD (SUCCEEDED|FAILED)" | head -80
+              | tee -a ../logs/wrapper-$sdk.txt | grep -E "error:|Undefined|BUILD (SUCCEEDED|FAILED)" | head -80 || true
+            grep -q "BUILD SUCCEEDED" ../logs/wrapper-$sdk.txt
             test -d dd/Build/Products/Release-$sdk/Mediasoup.framework
           done
           xcodebuild -create-xcframework -framework dd/Build/Products/Release-iphoneos/Mediasoup.framework \
@@ -95,6 +95,7 @@ jobs:
         run: |
           set -e
           for x in out/*.xcframework; do for b in $(find $x -mindepth 2 \( -name '*.a' -o -path '*.framework/*' -type f -perm -u+x \) ! -name '*.plist'); do file $b | grep -q -E 'Mach-O|ar archive' && echo "$b: $(lipo -archs $b)"; done; done | tee logs/lipo-verify.txt
+          for b in out/WebRTC.xcframework/*/WebRTC.framework/WebRTC out/Mediasoup.xcframework/*/Mediasoup.framework/Mediasoup; do echo "$b: $(lipo -archs $b)"; done | tee -a logs/lipo-verify.txt
           for a in dist/libwebrtc-ios-*.a; do echo "$a: $(lipo -archs $a)"; done | tee -a logs/lipo-verify.txt
           grep -q "ios-arm64_x86_64-simulator.*arm64 x86_64\|ios-arm64_x86_64-simulator.*x86_64 arm64" logs/lipo-verify.txt
       - name: Compare with Stream published 125.6422.070 (informational)
@@ -129,7 +130,8 @@ jobs:
           P
           shasum -a 256 provenance.json >> SHA256SUMS
       - uses: actions/attest-build-provenance@v2
-        continue-on-error: true
+        id: attest
+        continue-on-error: true   # GitHub does not persist attestations for user-owned PRIVATE repos
         with: { subject-path: "dist/*.zip, dist/*.a, dist/*.tar.gz" }
       - uses: actions/upload-artifact@v4
         with: { name: StreamWebRTC-m125-mediasoup-ios, path: dist/, retention-days: 90, compression-level: 0 }
@@ -142,4 +144,4 @@ jobs:
           (cd logs && zip -qr ../dist/build-logs.zip .)
           T=m125-stream-125.6422.070-run${{ github.run_id }}
           gh release create "$T" dist/* -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" -t "Stream WebRTC m125 (125.6422.070 lineage) + libmediasoupclient, iOS" \
-            -n "Built from GetStream/webrtc $WEBRTC_COMMIT with Stream's recipe ($STREAM_RECIPE). Swift wrapper step: ${{ steps.wrap.outcome }}. See provenance.json and SHA256SUMS."
+            -n "Built from GetStream/webrtc $WEBRTC_COMMIT with Stream's recipe ($STREAM_RECIPE). Swift wrapper: ${{ steps.wrap.outcome }}. GitHub attestation: ${{ steps.attest.outcome }}. See provenance.json and SHA256SUMS."
