@@ -78,6 +78,7 @@ jobs:
           mkdir -p wrap/bin wrap/Mediasoup/dependencies/webrtc
           cp -R out/WebRTC.xcframework out/mediasoupclient.xcframework out/sdptransform.xcframework wrap/bin/
           ln -s $PWD/hdr wrap/Mediasoup/dependencies/webrtc/src; ln -s $PWD/lmsc wrap/Mediasoup/dependencies/libmediasoupclient
+          mkdir -p wrap/build/libmediasoupclient/device; ln -s $PWD/b/dev wrap/build/libmediasoupclient/device/arm64
           cd wrap
           for sdk in iphoneos iphonesimulator; do
             A=$([ $sdk = iphoneos ] && echo "-arch arm64" || echo "-arch arm64 -arch x86_64")
