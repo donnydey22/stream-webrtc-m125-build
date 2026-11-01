@@ -50,10 +50,10 @@ jobs:
           build() { # $1 name $2 sdk $3 arch $4 slice
             cmake -S lmsc -B b/$1 -G Xcode -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=$2 -DCMAKE_OSX_ARCHITECTURES=$3 \
               -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 -DLIBWEBRTC_INCLUDE_PATH=$PWD/hdr -DLIBWEBRTC_BINARY_PATH=$PWD/s/$4 \
-              -DMEDIASOUPCLIENT_BUILD_TESTS=OFF -DLIBSDPTRANSFORM_BUILD_TESTS=OFF -DCMAKE_CXX_FLAGS="-fvisibility=hidden -fno-rtti $LIBCXX_FLAGS" \
+              -DMEDIASOUPCLIENT_BUILD_TESTS=OFF -DLIBSDPTRANSFORM_BUILD_TESTS=OFF -DSDPTRANSFORM_BUILD_TESTS=OFF -DSDPTRANSFORM_BUILD_READMEHELPER=OFF -DCMAKE_CXX_FLAGS="-fvisibility=hidden -fno-rtti $LIBCXX_FLAGS" \
               -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO
-            cmake --build b/$1 --config Release -- -quiet 2>&1 | tee -a logs/lmsc-$1.txt | grep -E "error|BUILD" | head -40 || true
-            find b/$1 -name 'lib*.a' | tee logs/lmsc-$1-libs.txt
+            cmake --build b/$1 --config Release --target mediasoupclient -- -quiet 2>&1 | tee -a logs/lmsc-$1.txt | grep -E "error|BUILD" | head -40 || true
+            find b/$1 -name 'lib*.a' | tee logs/lmsc-$1-libs.txt; grep -q libmediasoupclient.a logs/lmsc-$1-libs.txt
           }
           if grep -q 'use_custom_libcxx = false' s/device-arm64/gn-args-effective.txt; then LIBCXX_FLAGS=; else LIBCXX_FLAGS="-nostdinc++ -isystem $PWD/hdr/buildtools/third_party/libc++ -isystem $PWD/hdr/third_party/libc++/src/include -isystem $PWD/hdr/third_party/libc++abi/src/include -D_LIBCPP_HARDENING_MODE_DEFAULT=_LIBCPP_HARDENING_MODE_NONE"; fi; echo "LIBCXX_FLAGS=$LIBCXX_FLAGS" | tee logs/libcxx.txt; echo "LIBCXX_FLAGS=$LIBCXX_FLAGS" >> $GITHUB_ENV
           build dev iphoneos arm64 device-arm64
@@ -89,6 +89,12 @@ jobs:
           xcodebuild -create-xcframework -framework dd/Build/Products/Release-iphoneos/Mediasoup.framework \
             -framework dd/Build/Products/Release-iphonesimulator/Mediasoup.framework -output ../out/Mediasoup.xcframework
           cd ../out && ditto -c -k --keepParent Mediasoup.xcframework ../dist/Mediasoup.xcframework.zip
+      - name: Verify slices (lipo)
+        run: |
+          set -e
+          for x in out/*.xcframework; do for b in $(find $x -mindepth 2 \( -name '*.a' -o -path '*.framework/*' -type f -perm -u+x \) ! -name '*.plist'); do file $b | grep -q -E 'Mach-O|ar archive' && echo "$b: $(lipo -archs $b)"; done; done | tee logs/lipo-verify.txt
+          for a in dist/libwebrtc-ios-*.a; do echo "$a: $(lipo -archs $a)"; done | tee -a logs/lipo-verify.txt
+          grep -q "ios-arm64_x86_64-simulator.*arm64 x86_64\|ios-arm64_x86_64-simulator.*x86_64 arm64" logs/lipo-verify.txt
       - name: Compare with Stream published 125.6422.070 (informational)
         continue-on-error: true
         run: |
