@@ -2,10 +2,10 @@ name: Assemble m125 + mediasoup from cached slices
 on:
   workflow_dispatch:
     inputs:
-      slices_run_id: {description: run id with slice-* artifacts, required: true, default: '41349754148'}
-  push:
-    branches: [main]
-    paths: ['.github/workflows/assemble.yml']
+      slices_run_id: {description: run id with slice-* artifacts, required: true, default: ''}
+  workflow_run:
+    workflows: ["Stream WebRTC m125 + mediasoup (iOS) with provenance"]
+    types: [completed]
 permissions:
   contents: write
   actions: read
@@ -23,11 +23,12 @@ env:
   STREAM_REF_URL: https://github.com/GetStream/stream-video-swift-webrtc/releases/download/125.6422.070/WebRTC.xcframework.zip
 jobs:
   assemble:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: macos-15
     timeout-minutes: 120
     steps:
       - uses: actions/download-artifact@v4
-        with: { pattern: "slice-*", path: s, merge-multiple: true, run-id: "${{ inputs.slices_run_id || '41349754148' }}", github-token: "${{ github.token }}" }
+        with: { pattern: "slice-*", path: s, merge-multiple: true, run-id: "${{ inputs.slices_run_id || github.event.workflow_run.id }}", github-token: "${{ github.token }}" }
       - name: Select Xcode 16
         run: sudo xcode-select -s "$(cd $(ls -d /Applications/Xcode_16.4.app 2>/dev/null || ls -d /Applications/Xcode_16*.app | sort -V | tail -1) && pwd -P)"; xcodebuild -version
       - name: WebRTC.xcframework + static libs + headers
@@ -37,10 +38,10 @@ jobs:
           lipo -create simulator-arm64/WebRTC.framework/WebRTC simulator-x64/WebRTC.framework/WebRTC -output sim/WebRTC.framework/WebRTC
           xcodebuild -create-xcframework -framework device-arm64/WebRTC.framework -framework sim/WebRTC.framework -output ../out/WebRTC.xcframework
           (cd ../out && ditto -c -k --keepParent WebRTC.xcframework ../dist/WebRTC.xcframework.zip)
-          for S in device-arm64 simulator-arm64 simulator-x64; do cp $S/libwebrtc.a ../dist/libwebrtc-ios-$S.a; cp $S/args.gn ../logs/args-$S.gn; cp $S/gn-args-effective.txt ../logs/gn-effective-$S.txt; done
+          for S in device-arm64 simulator-arm64 simulator-x64; do cp $S/libwebrtc.a ../dist/libwebrtc-ios-$S.a; cp $S/libwebrtc-full.a ../dist/libwebrtc-full-ios-$S.a; cp $S/args.gn ../logs/args-$S.gn; cp $S/gn-args-effective.txt ../logs/gn-effective-$S.txt; done
           cp webrtc-m125-headers.tar.gz ../dist/
           for S in device-arm64 simulator-arm64; do echo "== $S"; nm -g --defined-only $S/libwebrtc.a 2>/dev/null | grep -c __Cr || true; nm -g $S/WebRTC.framework/WebRTC | grep -c ' T __ZN6webrtc' || true; done | tee ../logs/symbols.txt
-          lipo -create simulator-arm64/libwebrtc.a simulator-x64/libwebrtc.a -output ../libwebrtc-sim.a
+          lipo -create simulator-arm64/libwebrtc-full.a simulator-x64/libwebrtc-full.a -output ../libwebrtc-full-sim.a
           cp device-arm64/deps-revinfo.txt ../dist/deps-revinfo.txt; cp device-arm64/depot_tools_commit.txt ../logs/
       - name: libmediasoupclient against this libwebrtc
         run: |
@@ -82,7 +83,7 @@ jobs:
           cd wrap
           for sdk in iphoneos iphonesimulator; do
             A=$([ $sdk = iphoneos ] && echo "-arch arm64" || echo "-arch arm64 -arch x86_64")
-            LW=$([ $sdk = iphoneos ] && echo "$GITHUB_WORKSPACE/s/device-arm64/libwebrtc.a" || echo "$GITHUB_WORKSPACE/libwebrtc-sim.a")
+            LW=$([ $sdk = iphoneos ] && echo "$GITHUB_WORKSPACE/s/device-arm64/libwebrtc-full.a" || echo "$GITHUB_WORKSPACE/libwebrtc-full-sim.a")
             xcodebuild -project Mediasoup.xcodeproj -scheme Mediasoup -configuration Release -sdk $sdk $A ONLY_ACTIVE_ARCH=NO \
               IPHONEOS_DEPLOYMENT_TARGET=13.0 BUILD_LIBRARY_FOR_DISTRIBUTION=YES CODE_SIGNING_ALLOWED=NO "OTHER_LDFLAGS=\$(inherited) $LW" "OTHER_CPLUSPLUSFLAGS=\$(inherited) $LIBCXX_FLAGS" -derivedDataPath dd 2>&1 \
               | tee -a ../logs/wrapper-$sdk.txt | grep -E "error:|Undefined|BUILD (SUCCEEDED|FAILED)" | head -80 || true
