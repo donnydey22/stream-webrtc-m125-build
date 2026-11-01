@@ -109,9 +109,6 @@ jobs:
       - name: Extra assets (port patch, workflows)
         run: |
           cp logs/lmsc-m125-port.patch dist/
-          (cd $GITHUB_WORKSPACE && git init -q wf 2>/dev/null; true)
-          curl -sSL -H "Authorization: Bearer ${{ github.token }}" -o dist/workflows.tar.gz "$GITHUB_SERVER_URL/../api/v3" 2>/dev/null || true
-          rm -f dist/workflows.tar.gz
           gh api "repos/$GITHUB_REPOSITORY/tarball/$GITHUB_SHA" > dist/workflow-source-$GITHUB_SHA.tar.gz
         env: { GH_TOKEN: "${{ github.token }}" }
       - name: Checksums + provenance.json
