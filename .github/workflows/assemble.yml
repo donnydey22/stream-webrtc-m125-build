@@ -85,7 +85,7 @@ jobs:
             A=$([ $sdk = iphoneos ] && echo "-arch arm64" || echo "-arch arm64 -arch x86_64")
             LW=$([ $sdk = iphoneos ] && echo "$GITHUB_WORKSPACE/s/device-arm64/libwebrtc-full.a" || echo "$GITHUB_WORKSPACE/libwebrtc-full-sim.a")
             xcodebuild -project Mediasoup.xcodeproj -scheme Mediasoup -configuration Release -sdk $sdk $A ONLY_ACTIVE_ARCH=NO \
-              IPHONEOS_DEPLOYMENT_TARGET=13.0 BUILD_LIBRARY_FOR_DISTRIBUTION=YES CODE_SIGNING_ALLOWED=NO "OTHER_LDFLAGS=\$(inherited) $LW" "OTHER_CPLUSPLUSFLAGS=\$(inherited) $LIBCXX_FLAGS" -derivedDataPath dd 2>&1 \
+              IPHONEOS_DEPLOYMENT_TARGET=13.0 BUILD_LIBRARY_FOR_DISTRIBUTION=YES CODE_SIGNING_ALLOWED=NO "OTHER_LDFLAGS=\$(inherited) $LW -framework VideoToolbox -framework Network -framework CoreMedia -framework CoreVideo -framework AVFoundation -framework AudioToolbox -framework CoreAudio -framework Metal -framework MetalKit -framework GLKit -framework OpenGLES -framework QuartzCore -framework UIKit -framework CoreGraphics -framework Foundation" "OTHER_CPLUSPLUSFLAGS=\$(inherited) $LIBCXX_FLAGS" -derivedDataPath dd 2>&1 \
               | tee -a ../logs/wrapper-$sdk.txt | grep -E "error:|Undefined|BUILD (SUCCEEDED|FAILED)" | head -80 || true
             grep -q "BUILD SUCCEEDED" ../logs/wrapper-$sdk.txt
             test -d dd/Build/Products/Release-$sdk/Mediasoup.framework
